@@ -12,4 +12,4 @@ What are the most in-demand technical skills for entry-level positions, and how 
 - **Analysis**: Analyzed job market demand, skill frequency, and trends in tech skills.
 
 
-## View the full analysis here: [GitHub Repository]([https://github.com/TKwapong/project/blob/main/FinalProject-v.qmd])
+## View the full analysis here: [GitHub Repository](https://github.com/TKwapong/project/blob/main/FinalProject-v.qmd)
