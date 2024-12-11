@@ -1,0 +1,990 @@
+---
+title: "Exploring the Demand for Tech Skills"
+author: "Theodoxea Kwapong"
+format: 
+  pdf:
+    toc: true
+    toc-depth: 4 
+    number-sections: true
+    number-figures: true  
+editor: visual
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  error = FALSE,  # Set back to FALSE for clean output
+  message = FALSE
+)
+```
+
+# INTRODUCTION
+
+## Background
+
+The demand for tech skills in the job market has been steadily increasing, according to the Bureau of Labor Statistics (BLS) and other industry sources. While there are numerous job openings in tech, the necessary skills might not be readily available in the workforce, emphasizing the need for education and training. This highlights that students have to acquire relevant skills to meet the growing demand for tech-related positions.
+
+This project seeks to address this gap by analyzing which tech skills are in high demand, particularly for entry-level positions, and tracking how these skills’ relevance evolves over time. By combining data from job postings (via Adzuna API) and Google search trends (via Google Trends API), this report will explore the alignment between job market demand and public interest in these skills.
+
+The complete analysis and code can be found on the project’s GitHub repository: <https://github.com/TKwapong/project>
+
+The insights are valuable for students entering the job market to identify the most relevant skills to focus on and influencing classes they take and certifications they consider ultimately preparing for roles in the technology sector.
+
+```{r include = FALSE}
+# Load required libraries
+library(httr)
+library(jsonlite)
+library(dplyr)
+library(tidyr)
+library(forcats)  
+library(ggplot2)
+library(kableExtra)
+library(gtrendsR)
+library(tidytext)
+library(knitr)
+library(wordcloud)
+library(RColorBrewer)
+library(purrr)
+library(tidyverse)
+library(DBI)
+library(ggrepel)  
+```
+
+# METHODOLOGY
+
+Two primary data sources were used:
+
+1.  Job postings fetched from the Adzuna API
+
+2.  Search trends for popular tech skills using Google Trends API through the R package "gtrendsR"
+
+```{r}
+# Summarize datasets
+dataset_summary <- tibble(
+  Source = c("Adzuna API", "Google Trends"),
+  Description = c(
+    "Job postings data for various tech-related roles across the US",
+    "Search interest for tech skills over 2018-2023"
+  ),
+  Key_Variables = c(
+    "Job title, location, salary, description, job level",
+    "keywords, interest over time, regions"
+  ),
+  Limitations = c(
+    "Limited to jobs from Adzuna; not exhaustive of the job market",
+    "Limited to a maximum of 5 skills per query"
+  )
+)
+
+# Display the table in your report
+knitr::kable(dataset_summary, caption = "Summary of Data Sources Used")
+```
+
+The analysis involved:
+
+-   Fetching job postings data for various tech-related roles using Adzuna API and reading queried data into csv for easier retrieval later.
+
+-   Cleaning and refining the data to extract insights such as job levels and salaries.
+
+-   Performing text analysis on job descriptions to identify key skills and trends.
+
+-   Exploring Google Trends data to understand the popularity of tech skills over time.
+
+-   Comparison analysis between extracted job posting skills frequency and Google Trends data to determine how well job market demand aligns with public interest.
+
+## Data Sources
+
+### Adzuna API
+
+aggregator of job postings data worldwide
+
+The following roles were queried in order to retrieve substantial job postings data from Adzuna API:
+
+*- Data Analyst - Software Engineer - IT Support Specialist - Product Manager - Cybersecurity Analyst - Business Analyst - UX Designer - UI Designer - Data Scientist - Machine Learning - Data Engineer*
+
+To access the Adzuna API, you can sign up [here](https://developer.adzuna.com/overview) to obtain an **API Key** and **App ID**. The Adzuna API allows a maximum of 50 results per query, and we looped and iterated through 5 pages to gather more comprehensive data across multiple tech roles.
+
+```{r}
+# Create a summary table for variables
+variable_summary <- tibble(
+  Variable = c( "id", "description","salary_min","salary_max", "created", "title", "job_level"),
+  Description = c(
+    "Unique identifier for the job posting",
+    "Text description of the job role",
+    "Minimum salary for the job posting",
+    "Maximum salary for the job posting",
+    "Date the job posting was created",
+    "Title of the job position",
+    "Categorized level of the job (Entry, Mid, Senior)"
+  ),
+  Relevance = c(
+    "Key for data uniqueness",
+    "Used for text analysis to extract skills",
+    "Used to calculate average salary",
+    "Used to calculate average salary",
+    "Helps filter recent postings",
+    "Used to extract job roles",
+    "Used for analysis by job level"
+  )
+)
+
+# Display the table in the report
+knitr::kable(variable_summary, caption = "Summary of some Key Variables")
+
+```
+
+```{r data-retrieval, eval = FALSE}
+#API Query and Data Retrieval
+# Set API parameters
+api_url <- "https://api.adzuna.com/v1/api/jobs/us/search"
+app_id <- "13260c83"  # Replace with your actual app_id
+app_key <- "0b888d4f08ea26740f8c4b85dcbfccd0"  # Replace with your actual app_key
+
+# Expanded job query list
+queries <- c("data analyst", "software engineer", "IT support specialist", 
+             "product manager", "cybersecurity analyst", "business analyst", 
+             "UX designer", "UI designer", "data scientist", "machine learning", "data engineer")
+
+locations <- "US"
+
+# Number of job listings to retrieve per query
+results_per_page <- 50  # Max is 50 per query in this API
+
+# Limit the number of pages to fetch 5 pages per query
+max_pages <- 5
+
+# Initialize an empty list to store all raw job data
+all_jobs_data <- list()
+
+# Loop through each query to fetch data
+for (query in queries) {
+  query_data <- data.frame()
+  
+  # Encode the query to ensure proper URL formatting
+  encoded_query <- URLencode(query)
+  
+  # Loop to fetch multiple pages if needed but limit by max_pages
+  page_num <- 1
+  repeat {
+    # Construct API request URL
+    api_request_url <- paste0(api_url, "/",
+                              page_num, "?app_id=", app_id, "&app_key=", app_key, 
+                              "&results_per_page=", results_per_page, 
+                              "&what=", encoded_query, "&where=", locations)
+        
+    # Make API request
+    response <- GET(api_request_url)
+    
+    if (status_code(response) == 200) {
+      # Parse JSON response
+      data <- fromJSON(rawToChar(response$content))
+      
+      if (is.null(data$results) || length(data$results) == 0) {
+  print(paste("No results for query:", query))
+  break  # Exit if no results
+}
+
+      
+      # Extract raw data
+      job_data <- data$results
+      
+      # Add a column for query type for easier identification later
+      job_data$query <- query
+      
+      # Safely extract nested fields with more robust handling
+ # Extract 'label' directly from the 'category' column and create the new 'category_label'
+job_data <- job_data %>%
+  mutate(
+    # Directly use the 'label' column for category
+    category_label = category$label,
+    
+    # Directly use the 'display_name' column for location
+    location_display_name = location$display_name,
+    
+    # Directly use the 'display_name' column for company
+    company_display_name = company$display_name
+  ) %>%
+  select(-category, -location, -company)
+
+      # Combine the results
+      query_data <- bind_rows(query_data, job_data)
+      page_num <- page_num + 1
+      # Check if we've reached the max number of pages
+      if (page_num > max_pages) {
+        print(paste("Reached the maximum number of pages for query:", query))
+        break
+      }
+    } else {
+      print(paste("API request failed for query:", query))
+      break
+    }
+  }
+  
+  # Store raw data for this query
+  all_jobs_data[[query]] <- query_data
+}
+
+# Now we need to standardize the columns
+# Filter out invalid or empty data frames
+all_jobs_data <- Filter(function(x) is.data.frame(x) && nrow(x) > 0, all_jobs_data)
+
+# Get all unique column names
+all_columns <- unique(unlist(lapply(all_jobs_data, colnames)))
+
+# Standardize data frames
+all_jobs_data_standardized <- lapply(all_jobs_data, function(df) {
+  missing_cols <- setdiff(all_columns, colnames(df))
+  
+  # Add missing columns as NA
+  if (length(missing_cols) > 0) {
+    df[missing_cols] <- NA
+  }
+  
+  # Align columns
+  df <- df[, all_columns, drop = FALSE]
+  return(df)
+})
+
+# Debugging: Check structure of each data frame
+print(lapply(all_jobs_data_standardized, function(df) colnames(df)))
+print(lapply(all_jobs_data_standardized, nrow))
+
+# Combine all data
+final_job_data <- bind_rows(all_jobs_data_standardized)
+
+
+# Save the raw data to a CSV file
+write.csv(final_job_data, file = "raw_job_data.csv", row.names = FALSE)
+
+# confirmation
+print("Raw job data has been saved to raw_job_data.csv")
+```
+
+```{r}
+job_data <- read_csv("raw_job_data.csv", show_col_types = FALSE)
+```
+
+#### Data Management
+
+Since there are quality issues with getting data from the Web, the data was cleaned and structured to facilitate analysis:
+
+-   Subsetted job postings to 2023 to get recent data
+
+-   Standardized job title and description text and used *Job Description* and *Title* columns to categorize job postings by level: Entry, Mid, and Senior
+
+-   Handled missing values by inserting NA for irrelevant columns where applicable. Columns with NA values weren't relevant to project analysis
+
+-   Transformed job descriptions column text to lowercase and removed extra spaces in order to prepare text data for accurate tokenization and analysis.
+
+```{r}
+job_data_refined <- job_data %>%
+  filter(created >= as.Date("2023-01-01")) %>%
+  rename(
+    company_name = company_display_name,
+    location_name = location_display_name
+  ) %>%
+  mutate(
+    # Transforming job descriptions to lowercase and removing extra spaces
+# This prepares text data for accurate tokenization and analysis.
+    job_description = str_squish(str_to_lower(description)),
+    job_level = case_when(
+      # Entry Level: More comprehensive detection
+      grepl("\\b(entry|junior|associate|new grad|recent grad|trainee|apprentice|intern)\\b", title, ignore.case = TRUE) |
+      grepl("\\b(assist|learning|entry|support|coordinator|helpdesk|developing|training)\\b", job_description, ignore.case = TRUE) ~ "Entry Level",
+      
+      # Mid Level: Experience and responsibility indicators
+      grepl("\\b(mid|intermediate|2-3 years|specialist|2+ years|3+ years|consultant)\\b", title, ignore.case = TRUE) |
+      grepl("\\b(manage|supervise|coordinate|implement|independently|responsible|projects|design)\\b", job_description, ignore.case = TRUE) ~ "Mid Level",
+      
+      # Senior Level: Comprehensive detection of leadership and advanced roles
+      grepl("\\b(senior|lead|manager|principal|staff|head|director|chief|vp|executive|strategy|management)\\b", title, ignore.case = TRUE) |
+      grepl("\\b(lead|direct|strategic|executive|oversee|department|decision-making|advanced|expert)\\b", job_description, ignore.case = TRUE) ~ "Senior Level",
+      
+      # Fallback for technical roles
+      grepl("\\b(developer|engineer|architect|programmer)\\b", title, ignore.case = TRUE) & 
+      grepl("\\b(senior|lead|principal|staff)\\b", title, ignore.case = TRUE) ~ "Senior Level",
+      
+      grepl("\\b(developer|engineer|architect|programmer)\\b", title, ignore.case = TRUE) & 
+      (
+        grepl("\\b(2-3 years|3-5 years|experienced)\\b", job_description, ignore.case = TRUE) |
+        str_count(job_description, "\\byear\\b") > 3
+      ) ~ "Mid Level",
+      
+      grepl("\\b(developer|engineer|architect|programmer)\\b", title, ignore.case = TRUE) & 
+      (
+        grepl("\\b(entry|junior|new grad|recent grad)\\b", job_description, ignore.case = TRUE) |
+        str_count(job_description, "\\byear\\b") <= 2
+      ) ~ "Entry Level",
+      
+      # Additional rule to reduce Unspecified
+      grepl("\\b(specialist|consultant|professional)\\b", title, ignore.case = TRUE) & 
+      !grepl("\\b(junior|entry|senior|lead)\\b", title, ignore.case = TRUE) & 
+      grepl("\\b(manage|responsible|projects|independently)\\b", job_description, ignore.case = TRUE) ~ "Mid Level",
+      
+      TRUE ~ "Unspecified"
+    )
+  )
+```
+
+Here's a snapshot of data fetched and cleaned for analysis
+
+```{r, echo=TRUE}
+# Inspect the data structure
+glimpse(job_data_refined)
+```
+
+```{r, include = FALSE}
+# Check for missing values
+colSums(is.na(job_data_refined))
+
+# Summarize top companies
+job_data_refined %>%
+  count(company_name, sort = TRUE) %>%
+  slice_head(n = 10)
+
+# Summarize top locations
+job_data_refined %>%
+  count(location_name, sort = TRUE) %>%
+  slice_head(n = 10)
+```
+
+### Google Trends
+
+Google Trends data was used to explore the popularity of top skills identified during the text analysis phase. Google search frequency trends data was obtained through the R package "gtrendsR" in order to capture public interest in captured skills, for January 1, 2018 to December 31, 2023.
+
+# ANALYSIS
+
+## Data Analysis: Insights from Job Postings
+
+Performed initial data analysis to visualize and understand the extracted API data better.
+
+### Distribution of Job Levels
+
+Job Level Distribution: Analyzed the proportion of job postings at each level to better understand distribution of data obtained.
+
+```{r}
+# Summarize job levels
+
+job_level_dist <- job_data_refined %>%
+  count(job_level) %>%
+  mutate(percentage = n / sum(n) * 100)
+job_level_dist
+
+# Visualize Job Level Distribution
+ggplot(job_level_dist, aes(x = job_level, y = percentage)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  labs(title = "Distribution of Job Levels", 
+       x = "Job Level", 
+       y = "Percentage") +
+  theme_minimal()
+```
+
+Great to cumulatively have over 60% of job postings data being entry & mid level due to primary target audience being students.
+
+### Salary Analysis
+
+Salary Distribution: Compared salaries across Entry, Mid, and Senior levels to know what current figures are based on retrieved data.
+
+```{r}
+# Filtering out jobs with missing salary values
+# This ensures that salary-based analyses are accurate and consistent
+salary_data <- job_data_refined %>%
+  filter(!is.na(salary_min) & !is.na(salary_max)) %>%
+  mutate(salary_avg = (salary_min + salary_max) / 2)
+
+# Boxplot of salaries by job level
+ggplot(salary_data, aes(x = job_level, y = salary_avg, fill = job_level)) +
+  geom_boxplot() +
+  labs(title = "Salary Distribution by Job Level", x = "Job Level", y = "Average Salary") +
+  theme_minimal() +
+  scale_y_continuous(labels = scales::comma_format(scale = 1e3))
+
+#Salary Analysis by Job Level
+salary_by_level <- job_data_refined %>%
+  group_by(job_level) %>%
+  summarise(
+  avg_min_salary = format(mean(salary_min, na.rm = TRUE), nsmall = 2),
+    avg_max_salary = format(mean(salary_max, na.rm = TRUE), nsmall = 2)
+  )
+print(salary_by_level)
+```
+
+#### Text Analysis for Skills
+
+In this section, we perform various text analysis techniques to extract key insights from the job descriptions, including the identification of key skills, skill counts by job level, bigram and trigram analysis.
+
+##### Process
+
+-   Tokenized job descriptions into individual words
+
+-   Removed stop words
+
+-   Further filtered for technical skills using a predefined and dynamically generated list.
+
+-   Performed bigrams and trigram analysis to further identify the top skills and phrases.
+
+##### Text Analysis
+
+```{r}
+# Tokenize job descriptions and remove stop words
+job_tokens <- job_data_refined %>%
+  unnest_tokens(word, job_description) %>%
+  anti_join(stop_words)  # Remove common stop words
+
+# Count word frequencies
+word_counts <- job_tokens %>%
+  count(word, sort = TRUE)
+
+print("Top 10 words")
+head(word_counts, 10)
+
+job_keywords_above_400<- word_counts %>%
+  filter(n>400)
+
+# Visualize most common words in job descriptions
+ggplot(job_keywords_above_400, aes(x = reorder(word, n), y = n)) +
+  geom_bar(stat = "identity", fill = "lightcoral") +
+  coord_flip() +
+  labs(title = "Most Common Words in Job Descriptions", x = "Word", y = "Count")
+```
+
+Proceed to further analyse text to sift out generic words like job, description, support, experience, product, position, business, services, customers, role etc.
+
+```{r}
+# Filter out generic words
+generic_words <- c("job", "description", "support", "experience", "product", "position", "business", "services", "customers", "role", "solutions")
+filtered_word_counts <- word_counts %>%
+  filter(!word %in% generic_words)
+
+# Visualize filtered words
+ggplot(filtered_word_counts[1:20, ], aes(x = reorder(word, n), y = n)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top Words (Excluding Generic Words)", x = "Word", y = "Frequency") +
+  theme_minimal()
+```
+
+##### Filtering for Technical Skills
+
+Focused on extracting and counting the frequencies of tech skills in job descriptions by filtering with a dictionary of tech skills.
+
+```{r}
+# Define a list of tech keywords
+tech_skills <- c(
+  # Programming Languages
+  "python", "java", "javascript", "r", "sql", "c\\+\\+", "c#", "typescript", 
+  "golang", "rust", "kotlin", "swift", "scala", "php", "ruby", "matlab", 
+  "shell scripting", "assembly language", 
+
+  # Data Science & Analytics
+  "machine learning", "data analysis", "data science", "statistical analysis", 
+  "predictive modeling", "data visualization", "etl", "data engineering", 
+  "business intelligence", "feature engineering", "a/b testing", "bayesian statistics", 
+
+  # Cloud & Infrastructure
+  "aws", "azure", "google cloud", "cloud computing", "kubernetes", "docker", 
+  "amazon web services", "vmware", "openstack", "terraform", "ci/cd", "ansible", 
+  "jenkins", "cloud security", "cloud monitoring tools", 
+
+  # Tools & Platforms
+  "tableau", "power bi", "excel", "sas", "spss", "tensorflow", "pytorch", 
+  "scikit-learn", "pandas", "numpy", "jupyter notebook", "looker", "d3.js", 
+  "alteryx", "snowflake", "redshift", "tableau prep", "airflow", 
+
+  # Frameworks
+  "react", "angular", "vue.js", "django", "flask", "spring", ".net", 
+  "laravel", "ruby on rails", "ember.js", "svelte", "asp.net", "redux", 
+  "fastapi", "micronaut", 
+
+  # Big Data
+  "hadoop", "spark", "kafka", "big data", "nosql", "cassandra", "mongodb", 
+  "elasticsearch", "presto", "apache beam", "google bigquery", "redshift spectrum", 
+  "hive", "apache nifi", 
+
+  # AI & Emerging Tech
+  "artificial intelligence", "natural language processing", "deep learning", 
+  "computer vision", "chatgpt", "generative ai", "reinforcement learning", 
+  "ai ethics", "robotics", "edge ai", "augmented reality", "virtual reality", 
+  "quantum computing", "automl", 
+
+  # DevOps & Automation
+  "git", "github", "gitlab", "circleci", "puppet", "chef", "nagios", 
+  "splunk", "devsecops", "sre", 
+
+  # Security
+  "penetration testing", "ethical hacking", "siem", "iam", "network security", 
+  "cryptography", "zero trust architecture", 
+
+  # Industry-Specific Technologies
+   "blockchain", "fintech", "healthtech", "energytech"
+)
+
+
+# Filter for technical skills
+skill_counts <- job_tokens %>%
+  filter(word %in% tech_skills) %>%
+  count(word, sort = TRUE)
+
+# Visualize top skills
+ggplot(head(skill_counts,15), aes(x = reorder(word, n), y = n)) +
+  geom_bar(stat = "identity", fill = "darkgreen") +
+  coord_flip() +
+  labs(title = "Most Mentioned Tech Skills", x = "Skill", y = "Frequency") +
+  theme_minimal()
+
+
+head(skill_counts, 15)
+
+```
+
+##### Analyzing Skills by Job Level
+
+Here, we examine the tech skills by different job levels, focusing on entry-level roles.
+
+```{r}
+# Group by job level
+skills_by_level <- job_tokens %>%
+  filter(word %in% tech_skills) %>%
+  count(job_level, word, sort = TRUE)
+
+# Visualize for Entry Level and senior level
+ggplot(head(skills_by_level,15) %>% filter(job_level %in% c("Entry Level", "Senior Level")), 
+       aes(x = reorder(word, n), y = n, fill = job_level)) +
+  geom_bar(stat = "identity", position = "dodge") +  # 'dodge' ensures bars are grouped by job level
+  coord_flip() +
+  labs(title = "Top Skills for Entry-Level and Senior-Level Jobs", 
+       x = "Skill", 
+       y = "Frequency") +
+  theme_minimal()
+```
+
+##### Bigram and Trigram Analysis **(Skill Phrases)**
+
+In addition to single words, we will now analyze pairs (bigrams) and triplets (trigrams) of words to capture more phrases like "machine learning" et al that are often used in job descriptions. This provides a richer understanding of the skills demanded in the job market so not to miss relevant skills.
+
+```{r}
+# Create bigrams
+bigrams <- job_data_refined %>%
+  unnest_tokens(bigram, job_description, token = "ngrams", n = 2) %>%
+  count(bigram, sort = TRUE)
+
+# Create trigrams
+dynamic_trigrams <- job_data_refined %>%
+  unnest_tokens(trigram, job_description, token = "ngrams", n = 3) %>%
+  count(trigram, sort = TRUE)
+
+# View top results
+head(bigrams, 20)
+head(dynamic_trigrams, 20)
+
+# Filter for technical bigrams
+tech_bigrams <- bigrams %>%
+  filter(bigram %in% c("machine learning", "data analysis", "cloud computing", "software engineering", "artifical intelligence"))
+
+# Visualize top bigrams
+ggplot(tech_bigrams, aes(x = reorder(bigram, n), y = n)) +
+  geom_bar(stat = "identity", fill = "purple") +
+  coord_flip() +
+  labs(title = "Most Mentioned Skill Phrases", x = "Skill Phrase", y = "Frequency") +
+  theme_minimal()
+
+head(tech_bigrams)
+```
+
+##### **Outcome**
+
+This analysis helped identify which tech skills are most frequently mentioned in job descriptions and how they correlate with different job levels. The use of bigrams and trigrams further helped understand the combination of skill phrases that employers are looking for.
+
+-   The top skills extracted include AWS, Kafka, Javascript, and Typescript with they all being apparent for entry level roles.
+
+-   Top skill phrases include "machine learning," "data analysis," and "software engineering."
+
+-   Going through the trigrams list *"amazon web services"* made the most sense but already accounted for with AWS in earlier process so won't be repeated
+
+These findings were used to conduct the **Google Trends** popularity demand search.
+
+### Trend Analysis: Insights from Google Trends
+
+Based on the text analysis, we explored the popularity of the top skills extracted from job descriptions using GoogleTrends query between 2018 - 2023.
+
+### Process
+
+-   Queried Google Trends using the top 5 skills identified from the text analysis.
+
+-   Visualized trends in search interest over time and regional variations.
+
+```{r, include = FALSE}
+#Query Google Trends for top dynamic skills
+
+# Step 1: Combine Skills and Bigrams
+# Extract top skills and bigrams
+top_single_skills <- head(skill_counts$word, 3)  # Top 3 single-word skills
+top_skill_phrases <- head(tech_bigrams$bigram, 2)  # Top 2 skill phrases
+
+# Combine and ensure no duplicates
+top_skills <- unique(c(top_single_skills, top_skill_phrases))
+
+
+
+# Step 2: Query Google Trends
+dynamic_trends_data <- gtrends(keyword = top_skills, geo = "US", time = "2018-01-01 2023-12-31", low_search_volume = TRUE)
+
+dynamic_interest_over_time <- dynamic_trends_data$interest_over_time
+dynamic_interest_by_region <- dynamic_trends_data$interest_by_region
+
+# Step 3: Visualize Trends
+ggplot(dynamic_interest_over_time, aes(x = date, y = hits, color = keyword)) +
+  geom_line(size = 1.2) +
+  labs(
+    title = "Google Trends for Dynamically Identified Skills",
+    x = "Year",
+    y = "Search Interest",
+    color = "Skill"
+  ) +
+  theme_minimal()
+
+```
+
+```{r, include = FALSE}
+
+#Save to CSV file for when GTrends API does rate-limiting:
+
+# Save the interest_over_time data to a CSV file
+write.csv(dynamic_interest_over_time, "dynamic_interest_over_time.csv", row.names = FALSE)
+# Save the interest over region data to a CSV file
+write.csv(dynamic_interest_by_region , "dynamic_trends_over_region.csv", row.names = FALSE)
+```
+
+### Yearly Trends: Search interest over time.
+
+```{r}
+# Calculate yearly average hits
+dynamic_yearly_trends <- dynamic_interest_over_time%>%
+  mutate(year = format(as.Date(date), "%Y")) %>%
+  group_by(keyword, year) %>%
+  summarise(average_hits = mean(hits))
+
+# Growth rate calculation
+dynamic_growth_rate <- dynamic_yearly_trends %>%
+  group_by(keyword) %>%
+  summarise(growth = (last(average_hits) - first(average_hits)) / first(average_hits) * 100)
+```
+
+```{r}
+ggplot(dynamic_yearly_trends, aes(x = year, y = average_hits, group = keyword, color = keyword)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  labs(
+    title = "Yearly Trends Comparison for Tech Skills",
+    x = "Year",
+    y = "Average Search Interest",
+    color = "Skill"
+  ) +
+  theme_minimal()
+```
+
+#### Growth Rate between Start of 2018 and End of 2023
+
+```{r}
+print(dynamic_growth_rate)
+```
+
+#### Regional Interest: Geographic distribution of search interest.
+
+```{r}
+
+# Summarize interest by region
+dynamic_regional_summary <- dynamic_interest_by_region %>%
+  group_by(location) %>%
+  summarise(total_hits = sum(hits))
+
+# Map US states
+us_states <- map_data("state")
+dynamic_regional_summary$region <- tolower(dynamic_regional_summary$location)
+
+# Merge with map data
+dynamic_map_merged_data <- merge(us_states, dynamic_regional_summary, by.x = "region", by.y = "region")
+
+# Heatmap
+ggplot(dynamic_map_merged_data, aes(long, lat, group = group, fill = total_hits)) +
+  geom_polygon(color = "white") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  labs(
+    title = "Regional Interest in Tech Skills",
+    fill = "Search Interest"
+  ) +
+  theme_void()
+
+
+ # Get the top regions overall based on cumulative search interest across skills
+top_regions <- dynamic_interest_by_region %>%
+  group_by(location) %>%
+  summarise(total_hits = sum(hits, na.rm = TRUE)) %>%
+  arrange(desc(total_hits)) %>%
+  slice_head(n = 20) %>%
+  pull(location)
+
+# Filter the original data for the top regions
+dynamic_top_regions_combined <- dynamic_interest_by_region %>%
+  filter(location %in% top_regions)
+
+# Reorder location based on total hits for better visualization
+dynamic_top_regions_combined <- dynamic_top_regions_combined %>%
+  mutate(location = factor(location, levels = top_regions))
+
+# Plot the stacked bar chart
+ggplot(dynamic_top_regions_combined, aes(x = location, y = hits, fill = keyword)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(
+    title = "Top Regions for Tech Skills Search Interest",
+    x = "Region",
+    y = "Search Interest",
+    fill = "Skill"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    axis.text = element_text(size = 10),
+    plot.title = element_text(size = 14, face = "bold")
+  )
+
+
+
+
+```
+
+This suggests that students interested in developing competitive tech skills may benefit from focusing their job search and skill development efforts in these regional markets, where the demand appears to be strongest. Conversely, areas with lower relative demand and search interest may indicate opportunities for educational institutions to better align their curriculum and training programs to meet the evolving needs of local tech employers.
+
+### Comparison Analysis Between Job Market Demand(Adzuna API) and Search Interest(GTrends)
+
+This analysis provides valuable insights into the alignment between employer demand for certain technical skills and public interest/awareness of those skills.
+
+```{r}
+# Merge skill_counts with Google Trends data
+
+dtop_single_skills <- head(skill_counts, 3)%>% rename(word = word, frequency = n)  # Top 3 single-word skills
+dtop_skill_phrases <- head(tech_bigrams, 2)%>% rename(word = bigram, frequency = n)  # Top 2 skill phrases
+
+# Combine and ensure no duplicates
+top_skills_counts <- bind_rows(dtop_single_skills, dtop_skill_phrases)
+# Rename the keyword column in dynamic_interest_over_time for clarity
+names(dynamic_interest_over_time)[names(dynamic_interest_over_time) == "keyword"] <- "word"
+
+# Merge datasets
+merged_data <- merge(top_skills_counts, dynamic_interest_over_time, by = "word")
+
+
+# Correlation between skill frequency and search interest
+# Ensure columns are numeric for correlation
+correlation <- cor(merged_data$frequency, merged_data$hits, use = "complete.obs")
+
+# Visualize
+ggplot(merged_data, aes(x = word, y = hits, color = word)) +
+  geom_point(size = 3) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Correlation Between Skill Demand and Search Interest",
+       x = "Frequency in Job Descriptions",
+       y = "Google Search Interest") +
+  theme_minimal()
+```
+
+The correlation analysis revealed disparities between job market demand and public interest in technical skills. This could be as a result of GTrends API containing other search interests that may not necessarily be the job market demand.
+
+Due to varying sample sizes and scope of Adzuna and GTrends data, to ensure fair comparisons across skills, we normalized the frequency and search hits using a 0-100 scale and computed z-scores. This approach preserves relative differences while providing a standardized metric for analysis. Normalized metrics allow us to classify skills into categories such as 'High Demand' or 'Moderate Interest,' providing a nuanced understanding of the interplay between market needs and public awareness.
+
+```{r}
+# Comprehensive Skill Comparison Analysis
+
+# Data Preparation and Transformation
+skill_comparison <- top_skills_counts %>%
+  inner_join(
+    dynamic_interest_over_time %>%
+      group_by(word) %>%
+      summarise(
+        avg_hits = mean(hits, na.rm = TRUE),
+        hits_std_dev = sd(hits, na.rm = TRUE),
+        hits_median = median(hits, na.rm = TRUE),
+        hits_trend = lm(hits ~ as.numeric(date))$coefficients[2]  # Trend slope
+      ), 
+    by = "word"
+  ) %>%
+  mutate(
+    # Z-score standardization for comparison
+    z_frequency = scale(frequency),
+    z_hits = scale(avg_hits),
+    
+    # Comparative metrics
+    relative_importance = z_frequency * z_hits,
+    
+    # Categorical assessments with more descriptive levels
+    Demand_Level = case_when(
+      z_frequency > 1.5 ~ "Very High Demand",
+      z_frequency > 1 ~ "High Demand",
+      z_frequency > 0 ~ "Moderate Demand",
+      TRUE ~ "Low Demand"
+    ),
+    Search_Level = case_when(
+      z_hits > 1.5 ~ "Very High Interest",
+      z_hits > 1 ~ "High Interest",
+      z_hits > 0 ~ "Moderate Interest",
+      TRUE ~ "Low Interest"
+    )
+  )
+
+
+
+skill_plot <- ggplot(skill_comparison, aes(x = z_frequency, y = z_hits)) +
+  # Scatter plot with improved aesthetics
+  geom_point(
+    aes(size = relative_importance, 
+        color = hits_trend, 
+        alpha = 0.7)
+  ) +
+  # Use ggrepel for better text placement
+  geom_text_repel(
+    aes(label = word), 
+    vjust = -1.5, 
+    hjust = 0.5,
+    max.overlaps = 10  # Limit overlapping labels
+  ) +
+  # Trend line with confidence interval
+  geom_smooth(
+    method = "lm", 
+    se = TRUE, 
+    color = "red", 
+    linetype = "dashed"
+  ) +
+  
+  scale_color_gradient2(low = "blue", mid = "gray", high = "red", name = "Search Trend (Slope)") +
+  # Enhanced labels
+  labs(
+    title = "Skill Demand vs Search Interest",
+    subtitle = "Standardized Comparison of Skills(Frequency and Hits)",
+    x = "Job Description Frequency (Z-score)",
+    y = "Search Interest Hits (Z-score)",
+    size = "Relative Importance"
+  ) +
+  # Minimal theme with some customization
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 15),
+    plot.subtitle = element_text(color = "gray50"),
+    legend.position = "right"
+  )
+
+# Print the plot
+print(skill_plot)
+
+# Detailed Insights Table
+insights_table <- skill_comparison %>%
+  select(
+    Skill = word, 
+    Job_Description_Freq = frequency,
+    Avg_Search_Hits = avg_hits,
+    Frequency_Z_Score = z_frequency,
+    Search_Hits_Z_Score = z_hits,
+    Search_Trend = hits_trend,
+    Search_Hits_Std_Dev = hits_std_dev,
+    Rel_Importance = relative_importance,
+    Demand_Level,
+    Search_Level
+  ) %>%
+  arrange(desc(Rel_Importance))
+
+# Combine the data from skill_comparison and dynamic_growth_rate
+skill_insights <- skill_comparison %>%
+  select(
+    Skill = word,
+    Job_Description_Freq = frequency,
+    Avg_Search_Hits = avg_hits,
+    Rel_Importance = relative_importance,
+    Demand_Level,
+    Search_Level
+  ) %>%
+  inner_join(
+    dynamic_growth_rate %>%
+      rename(Skill = keyword, 
+             Growth_Rate_2018_2023 = growth),
+    by = "Skill"
+  )
+
+# Print the skill_insights table
+knitr::kable(skill_insights, caption = "Skill Comparative Analysis: Demand and Interest Insights") %>%
+  kable_styling(
+    full_width = FALSE,   # Keeps the table width aligned to content
+    font_size = 9        # Adjust font size for better readability
+  ) %>%
+  column_spec(1, bold = TRUE, width = "2cm") %>%  # Widen the first column
+  column_spec(2:7, width = "3cm")                # Widen remaining columns
+
+
+# Statistical Analysis
+correlation <- cor(skill_comparison$frequency, skill_comparison$avg_hits)
+print(paste("Correlation between Job Description Frequency and Search Hits:", 
+            round(correlation, 3)))
+
+```
+
+This scatter plot compares the standardized job description frequency and search interest for top skills. Each point represents a skill, with its position reflecting demand (x-axis) and interest (y-axis). Point size indicates relative importance, while color shows the search trend (red for increasing, blue for decreasing). Skills in the top-right quadrant, such as AWS, exhibit high demand and high interest, whereas Machine Learning highlights a disconnect with high demand but moderate search interest. JavaScript's decline in search interest is noteworthy despite its utility.
+
+##### Outcome
+
+The correlation coefficient between job description frequency and search hits suggests a moderate positive relationship between the two metrics, indicating that skills with higher demand tend to also have higher search interest.
+
+From the table:
+
+-   "aws" emerges as a dominant skill, with high demand, high search interest, and significant growth (32.8%) over the past five years. This indicates it is a highly relevant and sought-after skill. Industries such as **finance**, **e-commerce**, and **tech startups** increasingly rely on AWS for their cloud infrastructure.
+
+-   "kafka" and "data analysis" have relatively lower demand and interest, but are seeing positive growth trends, suggesting they may be emerging as areas of increasing importance.
+
+-   "javascript" is an interesting case, with moderate search interest but declining growth, indicating decreasing relevance as compared to other skills. This is likely due to be the rise of newer frameworks like React and Vue.js, which build upon JavaScript but provide more specialized functionality for web development.
+
+-   "machine learning" has high demand but moderate search interest and growth, hinting at a potential disconnect between job market needs and public/professional interest.
+
+# CONCLUSION
+
+## Findings
+
+1.  *Tech Skills in Demand*: AWS, data analysis, javascript, kafka and machine learning dominate based on job descriptions.
+
+2.  *Trends Over Time*: Kakfka and AWS show significant growth in search interest according to GTrends API.
+
+3.  *Regional Variations*: GTrends API shows that certain tech hubs, such as the District of Columbia, California, Massachusetts, New York, Virginia and Washington, exhibit higher levels of search interest for skills.
+
+4.  *Salary Insights*: Senior roles command significantly higher salaries, with noticeable gaps across job levels.
+
+The findings help inform educational program development and career guidance decisions for primarily students to ensure alignment between market demands and skill development efforts.
+
+-   *Students aiming for high-demand roles like AWS Engineer should focus on certifications, as the job postings indicate strong demand despite lower search interest. Relevant certifications, such as AWS Certified Solutions Architect and AWS Certified Developer, are highly valued by employers, further driving demand for professionals with AWS expertise.*
+
+-   *Skills like "machine learning" and "data analysis" show strong search interest, suggesting areas for professional development and visibility*
+
+-   *Also, in understanding these geographic variations in tech skill popularity, students can make more informed decisions about where to target their career aspirations, while educators can identify regional gaps and tailor their program offerings accordingly.*
+
+## Limitations
+
+While the findings from this analysis provide valuable insights, certain limitations should be noted:
+
+-   **Sample Scope**: The job description data is based on a sample of job postings retrieved from the Adzuna API. The dataset is not fully representative of the entire job market and may be biased towards specific sectors, regions, or job platforms. Additionally, the Adzuna API limits the number of hits per day (250), which may restrict the completeness of the data. Some skills may be underrepresented due to the limited query terms, and the dataset may not cover all industries or regions.
+
+-   **Skill Extraction**: The identification of skills in job postings relied on pre-defined keywords and phrases. While this approach is useful, it may overlook emerging or less commonly mentioned skills that do not fit within the chosen keyword set. Additionally, the keyword-based text analysis may miss nuances in how skills are described across different job postings.
+
+-   **Google Trends Data**: The Google Trends data reflects public search behavior, but it may not directly correlate with industry demand or skill acquisition. Search volume for keywords can be influenced by various factors unrelated to actual hiring needs. For instance, individuals may search for skills due to curiosity or academic interest without necessarily pursuing a career in that field. Furthermore, people may search for tools or technologies not directly related to job openings, which can skew the data.
+
+-   **Normalization Assumptions:** The normalization process used to compare different skills assumes a linear relationship between job description frequency and search interest. This simplification may not fully capture the complexity of how these two metrics interact in the real world. Z-scores standardize but may obscure small variations in data.
+
+-   **Data Availability**: Certain sites like LinkedIn, Glassdoor, and Google Jobs block scraping, limiting the potential for gathering data from these comprehensive job boards.
+
+## Future Work
+
+To address these limitations, and improve the comprehensiveness of future analyses future research could:
+
+1.  Expand the list of roles and skills in API queries.
+
+2.  Expand the scope of job posting data by integrating multiple APIs or datasets from different job boards, ensuring a more comprehensive view of the job market trends and skill demands.
+
+3.  Implement more sophisticated natural language processing (NLP) techniques, such as topic modeling or deeper clustering, could be used to capture a broader and more diverse range of skills mentioned in job descriptions. This would improve the richness of skill extraction.
+
+4.  Future research could extend this analysis to a global scale, comparing skill demand in different countries or regions. While this study focuses on the U.S. market, other countries (e.g., India, China, or European markets) may have varying skill demands, providing a broader understanding of global job market trends
